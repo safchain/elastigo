@@ -62,7 +62,7 @@ type BulkIndexer struct {
 	ErrorChannel chan *ErrorBuffer
 
 	// channel for sending to background indexer
-	bulkChannel chan []byte
+	BulkChannel chan []byte
 
 	// numErrors is a running total of errors seen
 	numErrors uint64
@@ -108,7 +108,7 @@ func (c *Conn) NewBulkIndexer(maxConns int) *BulkIndexer {
 	b.BulkMaxBuffer = BulkMaxBuffer
 	b.BulkMaxDocs = BulkMaxDocs
 	b.BufferDelayMax = time.Duration(BulkDelaySeconds) * time.Second
-	b.bulkChannel = make(chan []byte, 100)
+	b.BulkChannel = make(chan []byte, 100)
 	b.sendWg = new(sync.WaitGroup)
 	b.timerDoneChan = make(chan struct{})
 	return &b
@@ -245,7 +245,7 @@ func (b *BulkIndexer) startDocChannel() {
 	// This goroutine accepts incoming byte arrays from the IndexBulk function and
 	// writes to buffer
 	go func() {
-		for docBytes := range b.bulkChannel {
+		for docBytes := range b.BulkChannel {
 			b.mu.Lock()
 			b.docCt += 1
 			b.buf.Write(docBytes)
@@ -271,7 +271,7 @@ func (b *BulkIndexer) shutdown() {
 	// This must be called after Flush()
 	close(b.timerDoneChan)
 	close(b.sendBuf)
-	close(b.bulkChannel)
+	close(b.BulkChannel)
 	b.sendWg.Wait()
 }
 
@@ -284,7 +284,7 @@ func (b *BulkIndexer) Index(index string, _type string, id, parent, ttl string, 
 	if err != nil {
 		return err
 	}
-	b.bulkChannel <- by
+	b.BulkChannel <- by
 	return nil
 }
 
@@ -294,13 +294,13 @@ func (b *BulkIndexer) Update(index string, _type string, id, parent, ttl string,
 	if err != nil {
 		return err
 	}
-	b.bulkChannel <- by
+	b.BulkChannel <- by
 	return nil
 }
 
 func (b *BulkIndexer) Delete(index, _type, id string) {
 	queryLine := fmt.Sprintf("{\"delete\":{\"_index\":%q,\"_type\":%q,\"_id\":%q}}\n", index, _type, id)
-	b.bulkChannel <- []byte(queryLine)
+	b.BulkChannel <- []byte(queryLine)
 	return
 }
 
