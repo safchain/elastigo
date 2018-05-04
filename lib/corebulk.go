@@ -48,6 +48,8 @@ type BulkIndexer struct {
 	// to allow a mock sendor for test purposes
 	Sender func(*bytes.Buffer) error
 
+	senderLock sync.Mutex
+
 	// The refresh parameter can be set to true in order to refresh the
 	// relevant primary and replica shards immediately after the bulk
 	// operation has occurred
@@ -111,6 +113,7 @@ func (c *Conn) NewBulkIndexer(maxConns int) *BulkIndexer {
 	b.BulkChannel = make(chan []byte, 100)
 	b.sendWg = new(sync.WaitGroup)
 	b.timerDoneChan = make(chan struct{})
+	b.shutdownChan = make(chan chan struct{})
 	return &b
 }
 
@@ -130,13 +133,13 @@ func (c *Conn) NewBulkIndexerErrors(maxConns, retrySeconds int) *BulkIndexer {
 // Starts this bulk Indexer running, this Run opens a go routine so is
 // Non blocking
 func (b *BulkIndexer) Start() {
-	b.shutdownChan = make(chan chan struct{})
-
 	go func() {
 		// XXX(j): Refactor this stuff to use an interface.
+		b.senderLock.Lock()
 		if b.Sender == nil {
 			b.Sender = b.Send
 		}
+		b.senderLock.Unlock()
 		// Backwards compatibility
 		b.startHttpSender()
 		b.startDocChannel()
@@ -186,7 +189,9 @@ func (b *BulkIndexer) startHttpSender() {
 			for buf := range b.sendBuf {
 				// Copy for the potential re-send.
 				bufCopy := bytes.NewBuffer(buf.Bytes())
+				b.senderLock.Lock()
 				err := b.Sender(buf)
+				b.senderLock.Unlock()
 
 				// Perhaps a b.FailureStrategy(err)  ??  with different types of strategies
 				//  1.  Retry, then panic
@@ -196,7 +201,9 @@ func (b *BulkIndexer) startHttpSender() {
 					buf = bytes.NewBuffer(bufCopy.Bytes())
 					if b.RetryForSeconds > 0 {
 						time.Sleep(time.Second * time.Duration(b.RetryForSeconds))
+						b.senderLock.Lock()
 						err = b.Sender(bufCopy)
+						b.senderLock.Unlock()
 						if err == nil {
 							// Successfully re-sent with no error
 							continue
@@ -344,7 +351,7 @@ func (b *BulkIndexer) Send(buf *bytes.Buffer) error {
 	if jsonErr == nil {
 		if response.Errors {
 			atomic.AddUint64(&b.numErrors, uint64(len(response.Items)))
-                        return fmt.Errorf("Bulk Insertion Error: %s", body)
+			return fmt.Errorf("Bulk Insertion Error: %s", body)
 		}
 	}
 	return nil
